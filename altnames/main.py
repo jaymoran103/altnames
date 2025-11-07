@@ -58,38 +58,65 @@ class Renamer:
         return candidate
 
 
-
-
-
 # Configuration class to handle command-line arguments for inputs and options
 class Configuration:
 
+    # Initializes the Configuration with default settings, and maps flags and options to their handling functions.
     def __init__(self):
         self.files = []
         self.columns = []
+        self.prefix = None
+        self.skip_confirmation_step = False
 
+        # Map command-line flags to their handler functions
         self.flag_mappings = {
             "-f" : self.addFile,
-            "-c" : self.addColumn
+            "-c" : self.addColumn,
+            "-p" : self.setPrefix,
         } 
-        #Future - features for later
-        #optionMappings = {
-        #   "--help","--menu" : printMenu(),
-        #   "--autocolumns" : autoDetectColumns()
-        #}
+        
+        # Map command-line options to their handler functions
+        self.option_mappings = {
+          "--help" : self.helpOptionHandler,
+          "--menu" : self.menuOptionHandler, #Future - implement a more detailed menu, with --help offering a more concise tip and reference to --menu for more
+          "--skip" : self.skipOptionHandler, 
+          #"--autocolumns" : autoDetectColumns(), #Future - add auto column detection feature from original version
+          #"--defaultcolumns" : applydefaultColumns(), #Future - add default column set feature from original version
+          #"--randomnames" : setRandomNames(), #Future - add option to use non-deterministic random names
+        }
     
-
+    # Handler for the '-f' flag adds input files for processing
     def addFile(self,path:str):
         if path not in self.files:
             self.files.append(path)
     
+    # Handler for the '-c' flag adds target columns for renaming
     def addColumn(self,path:str):
         if path not in self.columns:
             self.columns.append(path) 
+    
+    # Handler for the '-p' flag sets the output file prefix, if not already set here
+    def setPrefix(self,prefix:str):
+        if self.prefix is None:
+            self.prefix = prefix
+        else:
+            print(f"Prefix already set using '-s', ignoring additional prefix argument {prefix}")
 
-    def print_menu(self):
+    # Handler for the '--menu' option – prints usage information. Future - add detailed menu/help prints once all planned features are implemented
+    def menuOptionHandler(self):
         print("usage: main.py [-f <file>] [-c <column>]")
+        exit(1)
+        #Future - if other arguments were provided, explain to user that menu/help was called and no further processing will occur?
 
+    # Handler for the '--help' option to display help information. Currently redirects to menu handler.
+    def helpOptionHandler(self):
+        self.menuOptionHandler()
+
+    # Handler for the '--skip' option to bypass confirmation step
+    def skipOptionHandler(self):
+        self.skip_confirmation_step = True
+
+    # Processes command-line arguments to configure the application.
     def processArgs(self,arg_queue:list):
 
         #Future - iterate over args rather than consuming a queue? since this isnt the original copy and is simple, im not concerned
@@ -100,28 +127,27 @@ class Configuration:
             if current_arg in self.flag_mappings:
                 #If no argument follows the flag, reject
                 if len(arg_queue) == 0:
-                    print("caught input flag without an argument following. Exiting for safety")
+                    print(f"caught input flag ({current_arg}) without an argument following. Exiting for safety")
                     exit(1)
 
-                #If present, pop the next argumnent, using it as input for the flag function
+                #If an argument follows the flag, pop it and use as input for the flag function
                 next_arg = arg_queue.pop(0)
-                function = self.flag_mappings[current_arg]
-                function(next_arg)
+                self.flag_mappings[current_arg](next_arg)
 
-            #Future - apply options indicated by --option style flags (no following arguments)
-            # elif current_arg in option_mappings:
-            #     function = self.option_mappings[current_arg]
-            #     function()
+            #Catch option flags, calling their relevant function
+            elif current_arg in self.option_mappings:
+                self.option_mappings[current_arg]()
 
             else:
-                #what if an argument isn't a flag? use as file later?
+                #Catch unrecognized inputs, defaulting to handling as input files
+                #print(f"argument '{current_arg}' wasn't a recognized flag or option. Handling as input file (-f)")
                 #self.flag_mappings["-f"](current_arg)
 
                 print(f"currently no support for argument: '{current_arg}' without a preceding flag. Exiting for safety")
                 print()
-                self.print_menu()
-                exit(1)
+                self.menuOptionHandler() #not ideal to use this here, but avoids code duplication. FUTURE - tweak while implementing true menu/help prints
 
+    # Validates the current configuration to ensure inputs are valid and ready to use
     def validateConfig(self):
         if self.files == []:
             print("No files specified. Use -f <file> to add files.")
@@ -132,21 +158,26 @@ class Configuration:
         return True
         #Future - check validity of input files, maybe offer fallbacks for columns?
 
+    # Reports the current configuration to the user, enabling them to confirm that the listed settings are correct
     def reportReady(self):
         print("Ready to start with the following configuration:")
         print(f"Files: {self.files}")
         print(f"Columns: {self.columns}")
         print()
 
+    # Enables the user to confirm
     def userConfirm(self):
-        response = input("Continue?? (y/n): ")
-        if response.lower() in ['y', 'yes']:
+
+        # Skip confirmation if indicated by configuration. TODO should this happen here or in __main__? method name becomes misleading, but this way is more modular
+        if self.skip_confirmation_step:
+            return True
+
+        response = input("Press ENTER to continue, add any character and press ENTER to cancel: ")
+        if response == "":
             return True
         else:
             print("Operation cancelled by user.")
             return False
-
-
 
 
 # CSVProcessor class for processing CSV files and replacing names in specified columns.
@@ -160,22 +191,23 @@ class CSVProcessor:
         self.name_columns = config.columns
         self.target_files = config.files
 
-        self.output_prefix = "renamed"
+        self.output_prefix = config.prefix or "renamed"
+        # self.output_prefix = "renamed"
+        # if config.prefix is not None:
+        #     self.output_prefix = config.prefix #TODO make more elegant
 
     def start(self):
-        print(f"Starting processing of files: {self.target_files}")
         for input_file in self.target_files:
             output_file = f"{self.output_prefix}-{input_file}"
             print(f"Processing {input_file} -> {output_file}",end="\n")
-            self.process_file(input_file, output_file)
-            print(f" ^ success")
+            self.processFile(input_file, output_file)
     
     #iterate through input file, replacing names in target columns and writing to output file
-    def process_file(self, input_path: str, output_path: str):
+    def processFile(self, input_path: str, output_path: str):
 
         with open(input_path, 'r', newline='', encoding='utf-8-sig') as infile:
                     
-            #TODO - settle on final approach for handling cm file bugs in header row
+            #TODO - settle on final approach for handling cm file bugs in header row. Use a first class function here? might make irrelevant by scanning the whole file first, then reproducing with more Dictwriter specifications
             #before setting up reader, read and store header (fixes DictWriter bug where irregular header lines would be recreated unfaithfully, rather than leaving headers untouched)
             #header_line = infile.readline() # Add this line to store the header before printing verbatim as output header
             reader = csv.DictReader(infile)
@@ -194,7 +226,6 @@ class CSVProcessor:
                     
                     #iterate through rows, replacing names when relevant
                     for row in reader:
-                        print(f"+{row}")
                         for col in self.name_columns:
                             if col in row and row[col]:
                                 
@@ -226,7 +257,6 @@ class CSVProcessor:
                 if c in splittingCharacters:
                     
                     renamed_string = renamer_instance.get_safe_name(pending_chars)
-                    print(f"{pending_chars} -> {renamed_string}")
                     #append renamed string and splitting token, then clear pendingChars
                     built_string += renamed_string
                     built_string += c
