@@ -10,10 +10,14 @@ from typing import Dict,Set
 class Renamer:
 
     # Initializes the Renamer with a seed for deterministic name generation.
-    def __init__(self, seed: str = "safenames"):
+    def __init__(self, seed: str):
         self.mappings: Dict[str, str] = {}
         self.used_names: Set[str] = set()
-
+        #Generate random seed if none specified
+        if seed is None:
+            seed = hash("text") % (2**32)
+            print(f"generating seed in Renamer: {seed}")
+            
         # Use Faker to generate names
         self.fake = Faker()
         Faker.seed(seed)
@@ -67,16 +71,17 @@ class Configuration:
         self.files = []
         self.columns = []
         self.selected_prefix = None
+        self.selected_seed = None
 
         #Booleans, some settable by option flags
         self.skip_confirmation_step = False
         self.use_default_columns_if_none_specified = True
         self.tokenize_name_parts = True
-        #self.deterministic_name_generation = True
 
         #Default values, to apply as needed
         self.default_prefix = "renamed"
         self.default_columns = ["First Name","Last Name","Preferred Name","Camper"]
+        #self.default_seed = "safenames" default seed doesn't add much, currently interpreting no seed as user opting for non-deterministic naming
         #self.generic_default_columns = ["Name","Full Name","First Name","Last Name","Preferred Name","Nickname"] #Truly generic version for defaults. Not relevant to my use case
 
         # Map command-line flags to their handler functions
@@ -84,6 +89,7 @@ class Configuration:
             "-f" : self.handle_flag_file,
             "-c" : self.handle_flag_column,
             "-p" : self.handle_flag_prefix,
+            "-s" : self.handle_flag_seed
         } 
         
         # Map command-line options to their handler functions
@@ -94,7 +100,6 @@ class Configuration:
             "--defaultcolumns" : self.handle_option_defaultcolumns, #Future - add default column set feature from original version
             # "--splitnames" : self.applySplitNames, #Future - make name splitting feature toggleable
             # "--autocolumns" : autoDetectColumns, #Future - add auto column detection feature from original version
-            # "--randomnames" : setRandomNames, #Future - add option to use non-deterministic random names
         }
 
 
@@ -104,27 +109,35 @@ class Configuration:
             self.files.append(path)
     
     # Handler for the '-c' flag adds target columns for renaming
-    def handle_flag_column(self,path:str):
-        if path not in self.columns:
-            self.columns.append(path) 
+    def handle_flag_column(self,col:str):
+        if col not in self.columns:
+            self.columns.append(col) 
     
-    # Handler for the '-p' flag sets the output file prefix, if not already set here:
+    # Handler for the '-p' flag sets the output file prefix. 
     def handle_flag_prefix(self,prefix:str):
         self.selected_prefix = prefix
-        # if self.prefix is None:
-        #     self.prefix = prefix
-        # else:
-        #     print(f"Prefix already set using '-s', ignoring additional prefix argument {prefix}") #even my zsh doesnt seem to enforce this, neccessary at all?
 
-    # Handler for the '--menu' option – prints usage information. Future - add detailed menu/help prints once all planned features are implemented
+    # Handler for the '-s' flag sets the name generation seed.
+    def handle_flag_seed(self,seed:str):
+        self.selected_seed = seed
+
+    # Handler for the '--menu' option – prints usage information. Future - spruce this up once planned features are implemented
     def handle_option_menu(self):
-        print("usage: main.py [-f <file>] [-c <column>]")
+        print("""usage: main.py
+              [-f <file>]   - program requires at least one file, each marked by this flag
+              [-c <column>] - column(s)if none are provided, applies default set
+              [-p <prefix>] - optionally specify the prefix for renamed files, replacing 'renamed-')
+              [-s <seed>]   - optionally specify a seed for consistent name mappings.
+              """)
         exit(1)
         #Future - if other arguments were provided, explain to user that menu/help was called and no further processing will occur?
 
-    # Handler for the '--help' option to display help information. Currently redirects to menu handler.
+    # Handler for the '--help' option to display help information. Future - spruce this up once planned features are implemented
     def handle_option_help(self):
-        self.handle_option_menu()
+        print("""This program requires arguments to specify the targets and methods for a renaming operation
+                usage: main.py [-f <file>] [-c <column>]
+                 \nfor more info, run main.py --menu """)
+        exit(1)
 
     # Handler for the '--skip' option to bypass confirmation step
     def handle_option_skip(self):
@@ -136,7 +149,7 @@ class Configuration:
             self.handle_flag_column(col)
     
     # Processes command-line arguments to configure the application.
-    def processArgs(self,arg_queue:list):
+    def process_args(self,arg_queue:list):
 
         #Future - iterate over args rather than consuming a queue? since this isnt the original copy and is simple, im not concerned
         while len(arg_queue) > 0:
@@ -166,8 +179,9 @@ class Configuration:
                 print()
                 self.handle_option_menu() #not ideal to use this here, but avoids code duplication. FUTURE - tweak while implementing true menu/help prints
 
-    #TODO this step needs a better name. Will it end up doing more than default columns and prefix?
-    def beforeValidation(self):
+    #Finish setup step, applying defaults where relevant
+    def finish_setup(self):
+
         #Apply default columns if none were specified and fallback is enabled
         if self.columns == [] and self.use_default_columns_if_none_specified:
             print("No columns specified, applying default columns.")
@@ -195,15 +209,13 @@ class Configuration:
         print("Ready to start with the following configuration:")
         print(f"Files: {self.files}")
         print(f"Columns: {self.columns}")
+        print(f"Prefix: {self.selected_prefix}")
         print()
 
     # Enables the user to confirm
     def userConfirm(self):
-
-        # Skip confirmation if indicated by configuration. TODO should this happen here or in __main__? method name becomes misleading, but this way is more modular
-        if self.skip_confirmation_step:
-            return True
-
+        #Future - consider putting reportReady reference here, as its not super needed if confirmation step is skipped. Though its still goof for the record
+        #Get user input, rejecting anything other than ""
         response = input("Press ENTER to continue, add any character and press ENTER to cancel: ")
         if response == "":
             return True
@@ -302,20 +314,24 @@ class CSVProcessor:
             return built_string
 
 if __name__ == "__main__":
+
+    #Set up config instance, process given arguments, finish setup
     config = Configuration()
-    config.processArgs(sys.argv[1:])
-    config.beforeValidation()
+    config.process_args(sys.argv[1:])
+    config.finish_setup()
 
-    if config.validateConfig():
-        config.reportReady()
-    else:
-        print("Validation failed. Exiting")
+    # Exit if validation fails. otherwise report ready
+    if not config.validateConfig():
+        print("Validation failed, use flag --help or --menu for more information \nExiting")
         exit(0)
+    else:
+        config.reportReady() #Future: consider only 'reporting' here skipping isn't enabled. or call report from the userconfirm step
     
-    if config.userConfirm():
-        renamer = Renamer()
-        file_processor = CSVProcessor(config,renamer)
+    if config.skip_confirmation_step or config.userConfirm():
 
+        #Create renamer and processor instances
+        renamer = Renamer(config.selected_seed)
+        file_processor = CSVProcessor(config,renamer)
 
         #Start process, timing for user feedback
         start_time = time.perf_counter()
@@ -326,7 +342,7 @@ if __name__ == "__main__":
         elapsed_time = end_time - start_time
         print(f"Process finished in {elapsed_time:0.3f}s\n")
 
-
     else:
+        print("Exiting")
         exit(1)
 
