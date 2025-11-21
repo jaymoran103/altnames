@@ -70,7 +70,9 @@ class Configuration:
 
         #Booleans, some settable by option flags
         self.skip_confirmation_step = False
-        self.USE_DEFAULTS_AS_FALLBACK = True
+        self.use_default_columns_if_none_specified = True
+        self.tokenize_name_parts = True
+        #self.deterministic_name_generation = True
 
         #Default values, to apply as needed
         self.default_prefix = "renamed"
@@ -79,35 +81,35 @@ class Configuration:
 
         # Map command-line flags to their handler functions
         self.flag_mappings = {
-            "-f" : self.addFile,
-            "-c" : self.addColumn,
-            "-p" : self.setPrefix,
+            "-f" : self.handle_flag_file,
+            "-c" : self.handle_flag_column,
+            "-p" : self.handle_flag_prefix,
         } 
         
         # Map command-line options to their handler functions
         self.option_mappings = {
-          "--help" : self.helpOptionHandler,
-          "--menu" : self.menuOptionHandler, #Future - implement a more detailed menu, with --help offering a more concise tip and reference to --menu for more
-          "--skip" : self.skipOptionHandler, 
-          "--defaultcolumns" : self.applyDefaultColumns, #Future - add default column set feature from original version
-          #"--splitnames" : self.applySplitNames, #Future - make name splitting feature toggleable
-          #"--autocolumns" : autoDetectColumns(), #Future - add auto column detection feature from original version
-          #"--randomnames" : setRandomNames(), #Future - add option to use non-deterministic random names
+            "--help" : self.handle_option_help,
+            "--menu" : self.handle_option_menu, #Future - implement a more detailed menu, with --help offering a more concise tip and reference to --menu for more
+            "--skip" : self.handle_option_skip, 
+            "--defaultcolumns" : self.handle_option_defaultcolumns, #Future - add default column set feature from original version
+            # "--splitnames" : self.applySplitNames, #Future - make name splitting feature toggleable
+            # "--autocolumns" : autoDetectColumns, #Future - add auto column detection feature from original version
+            # "--randomnames" : setRandomNames, #Future - add option to use non-deterministic random names
         }
 
 
     # Handler for the '-f' flag adds input files for processing
-    def addFile(self,path:str):
+    def handle_flag_file(self,path:str):
         if path not in self.files:
             self.files.append(path)
     
     # Handler for the '-c' flag adds target columns for renaming
-    def addColumn(self,path:str):
+    def handle_flag_column(self,path:str):
         if path not in self.columns:
             self.columns.append(path) 
     
     # Handler for the '-p' flag sets the output file prefix, if not already set here:
-    def setPrefix(self,prefix:str):
+    def handle_flag_prefix(self,prefix:str):
         self.selected_prefix = prefix
         # if self.prefix is None:
         #     self.prefix = prefix
@@ -115,23 +117,23 @@ class Configuration:
         #     print(f"Prefix already set using '-s', ignoring additional prefix argument {prefix}") #even my zsh doesnt seem to enforce this, neccessary at all?
 
     # Handler for the '--menu' option – prints usage information. Future - add detailed menu/help prints once all planned features are implemented
-    def menuOptionHandler(self):
+    def handle_option_menu(self):
         print("usage: main.py [-f <file>] [-c <column>]")
         exit(1)
         #Future - if other arguments were provided, explain to user that menu/help was called and no further processing will occur?
 
     # Handler for the '--help' option to display help information. Currently redirects to menu handler.
-    def helpOptionHandler(self):
-        self.menuOptionHandler()
+    def handle_option_help(self):
+        self.handle_option_menu()
 
     # Handler for the '--skip' option to bypass confirmation step
-    def skipOptionHandler(self):
+    def handle_option_skip(self):
         self.skip_confirmation_step = True
 
     # Applies default columns to the configuration
-    def applyDefaultColumns(self):
+    def handle_option_defaultcolumns(self):
         for col in self.default_columns:
-            self.addColumn(col)
+            self.handle_flag_column(col)
     
     # Processes command-line arguments to configure the application.
     def processArgs(self,arg_queue:list):
@@ -162,14 +164,14 @@ class Configuration:
 
                 print(f"currently no support for argument: '{current_arg}' without a preceding flag. Exiting for safety")
                 print()
-                self.menuOptionHandler() #not ideal to use this here, but avoids code duplication. FUTURE - tweak while implementing true menu/help prints
+                self.handle_option_menu() #not ideal to use this here, but avoids code duplication. FUTURE - tweak while implementing true menu/help prints
 
     #TODO this step needs a better name. Will it end up doing more than default columns and prefix?
     def beforeValidation(self):
         #Apply default columns if none were specified and fallback is enabled
-        if self.columns == [] and self.USE_DEFAULTS_AS_FALLBACK:
+        if self.columns == [] and self.use_default_columns_if_none_specified:
             print("No columns specified, applying default columns.")
-            self.applyDefaultColumns()
+            self.handle_option_defaultcolumns()
 
         #Apply default prefix if none was specified
         if self.selected_prefix is None:
@@ -262,13 +264,12 @@ class CSVProcessor:
                         writer.writerow(row)
  
     #Given a name string, returns a renamed, ready to use version 
-    #Based on TOKENIZE_NAME_PARTS status, will apply renamer to the whole string, or in chunks split by designated characters
+    #Based on tokenize_name_parts status, will apply renamer to the whole string, or in chunks split by designated characters
     def renamingFunction(self,renamer_instance: Renamer,nameString: str):
 
-        TOKENIZE_NAME_PARTS = True #TODO - reimplement as configurable option
         #Future - handle with first class function somewhere calling this function or get_safe_name directly?
         #Rename and return whole string if not tokenizing
-        if not TOKENIZE_NAME_PARTS: 
+        if not self.config.tokenize_name_parts: 
             return renamer_instance.get_safe_name(nameString)
 
         else:
