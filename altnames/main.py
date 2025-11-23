@@ -2,7 +2,7 @@ import sys
 import time
 import csv
 import random
-from typing import Dict,Set
+from typing import Dict,Set,TextIO
 from textwrap import dedent
 from faker import Faker
 
@@ -117,6 +117,7 @@ class Configuration:
         self.auto_detect_columns = False
         self.rename_whole_cells = False  #Applies renaming function to whole cells. For formats with multiple names in a cell ("First Last", "Last, First" "Hyphen-ated") this can lead to inconsistent outputs, and should be applied with caution
         self.warn_max_attempts = False
+        self.applied_default_columns = False #Toggled for accurate print confirmation of what happens during config
 
         #Default values, to apply as needed
         self.default_prefix = "renamed"
@@ -184,6 +185,7 @@ class Configuration:
     # Applies default columns to the configuration
     def handle_option_defaultcolumns(self):
         self.columns.update(self.default_columns)
+        self.applied_default_columns = True
 
     # Applies renamer to whole name strings, not tokenizing to catch spaces or special characters.
     def handle_option_renamewholecells(self):
@@ -260,14 +262,17 @@ class Configuration:
 
 
     #Finish setup step, applying defaults where relevant
+    #TODO Check file validity here, reporting issues / removing references in advance
     def finish_setup(self):
+
+        if self.default_columns:
+            print(f"Added default columns: {sorted(self.default_columns)}")
 
         #Apply auto-detected columns if enabled
         if self.auto_detect_columns:
-
             detected_columns = self.detect_columns(self.columns,self.files)
             if detected_columns:
-                print(f"Auto-detected columns: {detected_columns}")
+                print(f"Auto-detected columns: {sorted(detected_columns)}")
                 self.columns.update(detected_columns)
 
         #Apply default columns if none were specified and fallback is enabled
@@ -280,7 +285,8 @@ class Configuration:
             print(f"No prefix specified, applying default prefix '{self.default_prefix}'.")
             self.selected_prefix = self.default_prefix
 
-    # Validates the current configuration to ensure inputs are valid and ready to use
+    # Validates the current configuration to ensure inputs are valid and ready to use. 
+    # This should either succeed or fail. Any amending of inputs should happen in the preceding setup step.
     def validateConfig(self):
         if not self.files:
             print("No files specified. Use -f <file> to add files.")
@@ -289,13 +295,12 @@ class Configuration:
             print("No columns specified. Use -c <column> to add columns.")
             return False
         return True
-        #FUTURE - check validity of input files, maybe offer fallbacks for columns?
 
     # Reports the current configuration to the user, enabling them to confirm that the listed settings are correct
     def reportReady(self):
         print("\nReady to start with the following configuration:")
-        print(f"Files: {self.files}")
-        print(f"Columns: {self.columns}")
+        print(f"Files: {sorted(self.files)}")
+        print(f"Columns: {sorted(self.columns)}")
         print(f"Prefix: {self.selected_prefix}")
         if self.selected_seed is not None:
             print(f"Seed: {self.selected_seed}")
@@ -311,89 +316,135 @@ class Configuration:
             print("Operation cancelled by user.")
             return False
 
-
 # CSVProcessor class for processing CSV files and replacing names in specified columns.
-# FUTURE - add graceful handling somewhere for file issues
 class CSVProcessor:
 
+    # Initializes the CSVProcessor with the given configuration and renamer.
     def __init__(self, config: Configuration, renamer: Renamer):
-        self.config = config
         self.renamer = renamer
-
-        #Better practice to define each here, or pull from self.config.whatever each time? Values wont change at this point
-        self.name_columns = config.columns
         self.target_files = config.files
         self.given_prefix = config.selected_prefix
+        self.lowercase_columns = {col.lower(): col for col in config.columns} #store columns in lowercase for standardized comparison
+        self.rename_whole_cells = config.rename_whole_cells
 
-        #Build lowercase column mapping for case insensitive matching 
-        self.lowercase_columns = {col.lower(): col for col in config.columns}
-
-
-    def start(self):
-        for input_file in self.target_files:
+    # Starts the processing of all target files.
+    def start_processing(self):
+        for input_file in sorted(self.target_files):
             output_file = f"{self.given_prefix}-{input_file}"
-            print(f"Processing {input_file} -> {output_file}",end="\n")#FUTURE - give a warning if file had no matching columns to rename?
-            self.processFile(input_file, output_file)
-    
-    #iterate through input file, replacing names in target columns and writing to output file
-    def processFile(self, input_path: str, output_path: str):
+            print(f"Processing {input_file} -> {output_file}",end=" | ")#FUTURE - give a warning if file had no matching columns to rename?
 
-        with open(input_path, 'r', newline='', encoding='utf-8-sig') as infile:
-                    
-            #TODO - settle on final approach for handling cm file bugs in header row. Use a first class function here? might make irrelevant by scanning the whole file first, then reproducing with more Dictwriter specifications
-            #before setting up reader, read and store header (fixes DictWriter bug where irregular header lines would be recreated unfaithfully, rather than leaving headers untouched)
-            #header_line = infile.readline() # Add this line to store the header before printing verbatim as output header
-            reader = csv.DictReader(infile)
+            try:
+                self.process_file(input_file, output_file)
+                print("Success")
+            except Exception as e:
+                # print(f"Error: {e}. Skipping")
+                print(f"Error: {e}")
             
-            with open(output_path, 'w', newline='', encoding='utf-8') as outfile:
-                # outfile.write(header_line)
-                if reader.fieldnames:
 
-                    #Compare present headers to config columns, building list of target columns to rename
-                    target_columns = []
-                    for header in reader.fieldnames:
-                        if header.lower() in self.lowercase_columns: #checking in standardized lower case
-                            target_columns.append(header)
+    #Generate renamed row by applying renaming function to target columns
+    def rename_row_columns(self,row:dict,target_columns:list[str]):
+        for col in target_columns:
+            #If row has a non-empty value for the target column, replace with output of renaming function
+            if row[col]:
+                row[col] = self.apply_renaming(row[col])
 
-                    #Set up writer with same fieldnames as reader, then write header
-                    writer = csv.DictWriter(
-                        outfile, 
-                        fieldnames=reader.fieldnames,
-                        quoting=csv.QUOTE_ALL, # Ensures all fields are quoted, convention for CM files
-                        # extrasaction='ignore'  # Add this to handle extra columns
-                    )
-                    writer.writeheader() #comment out if using the header_line bug fix
-                    
-                    #iterate through rows, replacing names when relevant
-                    for row in reader:
-                        for col in target_columns:
-                            if row[col]:
-                                row[col] = self.renamingFunction(self.renamer, row[col])
+    #iterate through input file, replacing names in target columns and writing to output file.
+    def process_file(self, input_path: str, output_path: str):
+        try:
+            with open(input_path, 'r', newline='', encoding='utf-8-sig') as infile:
+                
+                #Detect dialect for file writing
+                detected_dialect = self.detect_dialect(infile)
 
-                        # Write row with replaced names
-                        writer.writerow(row)
+                # Create CSV reader for input file
+                reader = csv.DictReader(infile)
+
+                #Skip files with no headers, something went wrong
+                if not reader.fieldnames:
+                    raise ValueError("No headers found.")
+
+                # Write renamed file
+                self.write_renamed_file(output_path,reader,detected_dialect)
+
+        #Catch file errors to return a warning string, otherwise return None for success
+        except FileNotFoundError:
+            #return f"Error: file not found."
+            raise FileNotFoundError(f"input file not found")
+
+        except Exception as e:
+            # return f"Error: {e}."
+            raise RuntimeError(e)
+        return None
+
+    # Check input file dialect for proper writing
+    def detect_dialect(self,infile: TextIO):
+        #sample initial characters for dialect detection, then reset file pointer
+        sample = infile.read(1024)
+        infile.seek(0)  
+        #Attempt to detect dialect, defaulting to excel if detection fails
+        try:
+            return csv.Sniffer().sniff(sample)
+        except csv.Error:
+            return csv.excel
+
+    # Write the renamed CSV file to the output path. Returns str indicating warning, otherwise None for success
+    def write_renamed_file(self,output_path:str, reader:csv.DictReader, detected_dialect:csv.Dialect) -> str:
+        
+        with open(output_path, 'w', newline='', encoding='utf-8') as outfile:
+
+            #Compare present headers to config columns, building list of target columns to rename
+            target_columns = self.detect_target_columns(reader)
+
+            # If no columns matched, send a warning back instead of silently writing unmodified file
+            if not target_columns:
+                raise ValueError("No name columns to modify.") 
+
+            #Set up writer with same fieldnames as reader, then write header
+            writer = csv.DictWriter(
+                outfile,
+                fieldnames=reader.fieldnames,
+                dialect=detected_dialect
+            )
+            writer.writeheader()
+            
+            #iterate through rows, applying renaming function
+            for row in reader:
+                self.rename_row_columns(row,target_columns)
+
+                # Write row with replaced names
+                writer.writerow(row)
+        return None
+            
  
-    #Given a name string, returns a renamed, ready to use version 
-    #If rename_whole_cells is True, applies renamer to the whole string, rather than chunks split by designated characters
-    #   ^For formats with multiple names in a cell ("First Last", "Last, First" "Hyphen-ated") this can lead to inconsistent outputs, and should be applied with caution
-    def renamingFunction(self,renamer_instance: Renamer,nameString: str):
+    #Compare present headers to config columns, building list of target columns to rename
+    def detect_target_columns(self,reader:csv.DictReader):
+        target_columns = []
+        for header in reader.fieldnames:
+            if header.lower() in self.lowercase_columns: #checking in standardized lower case
+                target_columns.append(header)
+        return target_columns
 
-        if self.config.rename_whole_cells: 
-            return renamer_instance.get_safe_name(nameString)
+
+    #Given a name string, returns a renamed, ready to use version
+    def apply_renaming(self,name_string: str):
+
+        #If rename_whole_cells is True, applies renamer to the whole string, rather than chunks split by designated characters
+        #   ^For formats with multiple names in a cell ("First Last", "Last, First" "Hyphen-ated") this can lead to inconsistent outputs, and should be applied with caution
+        if self.rename_whole_cells: 
+            return self.renamer.get_safe_name(name_string)
 
         else:
-            #splittingStrings = ["del","jr","sr"] #FUTURE - also exempt strings like titles and connecting words?
-            splittingCharacters = [' ','-','–','—',',']
+            #splitting_strings = ["del","jr","sr"] #FUTURE - also exempt strings like titles and connecting words?
+            splitting_characters = [' ','-','–','—',',']
 
             built_string = ""
             pending_chars = ""
 
             #Iterate through characters in string, pausing to rename and append recent characters whenever a splitting character is reached.
-            for c in nameString:
-                # if splittingCharacters.contains(c):
-                if c in splittingCharacters:
-                    
-                    renamed_string = renamer_instance.get_safe_name(pending_chars)
+            for c in name_string:
+                if c in splitting_characters:
+                    renamed_string = self.renamer.get_safe_name(pending_chars)
+
                     #append renamed string and splitting token, then clear pendingChars
                     built_string += renamed_string
                     built_string += c
@@ -403,10 +454,8 @@ class CSVProcessor:
                     
 
             #if a remainder exists, rename and append
-            if pending_chars != "":                
-                # built_string += renamer_instance.get_safe_name(pending_chars)
-                # built_string += renamer_instance.get_safe_name(pending_chars)
-                built_string += renamer_instance.get_safe_name(pending_chars)
+            if pending_chars != "":
+                built_string += self.renamer.get_safe_name(pending_chars)
 
             return built_string
 
@@ -430,13 +479,17 @@ if __name__ == "__main__":
         print("Exiting")
         exit(0)
 
+    if config.skip_confirmation_step:
+        print("(User skipped confirmation, beginning processing step)")
+    print()
+    
     #Create renamer and processor instances
     renamer = Renamer(config.selected_seed,warn_on_max_attempts=config.warn_max_attempts)
     file_processor = CSVProcessor(config,renamer)
 
     #Start process, timing for user feedback
     start_time = time.perf_counter()
-    file_processor.start()
+    file_processor.start_processing()
     end_time = time.perf_counter()
 
     #Determine elapsed time and print exit message
