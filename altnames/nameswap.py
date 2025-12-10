@@ -11,7 +11,6 @@ from typing import Dict,Set,TextIO
 from textwrap import dedent
 from faker import Faker
 
-
 #Help text for command line usage
 HELP_TEXT = dedent("""
     This program renames names in specified columns of CSV files, generating safe alternatives for demos. 
@@ -66,7 +65,7 @@ class Renamer:
         self.used_names: Set[str] = set()
         self.max_attempts = _max_attempts
         self.warn_on_max_attempts = _warn_on_max_attempts
-        self.seed = _seed if _seed else random.randint(0,100)# Generate random seed if none specified TODO bigger range? Does it ever matter here?
+        self.seed = _seed if _seed else random.randint(0,255)# Generate random seed if none specified
         
             
         # Set up Faker with seed
@@ -115,7 +114,7 @@ class Configuration:
     
     Public Methods:
         process_args(arg_queue:list) - processes command-line arguments sequentially to configure the application.
-        finish_setup() - Finish setup step, veryifying inputs and applying defaults where relevant.
+        finish_setup() - Finish setup step, verifying inputs and applying defaults where relevant.
         validate_config() - Ensures minimum required inputs are present and ready to use. Returns boolean indicating for validity
         report_ready() - Reports the current configuration to the user, enabling them to confirm that the listed settings are correct
         user_confirm() - Waits for decision to continue or cancel renaming process, returning boolean indicating choice
@@ -146,94 +145,37 @@ class Configuration:
         self.default_columns = ["First Name","Last Name","Preferred Name","Camper"]
         #self.generic_default_columns = ["Name","Full Name","First Name","Last Name","Preferred Name","Nickname"] #Truly generic version for defaults. Not relevant to my use case
 
-        # Map command-line flags to their handler functions
-        # TODO Replace with lambda functions where possible
+        # Map command-line flags to lambda functions to handle their inputs
         self.flag_mappings = {
-            "-f" : self.handle_flag_file,
-            "-c" : self.handle_flag_column,
-            "-p" : self.handle_flag_prefix,
-            "-s" : self.handle_flag_seed
+            "-f" : lambda x: self.files.add(x),                     #Add file to process
+            "-c" : lambda x: self.columns.add(x),                   #Add column to rename
+            "-p" : lambda x: setattr(self, 'selected_prefix', x),   #Set selected prefix for output files
+            "-s" : lambda x: setattr(self, 'selected_seed', x)      #Set selected seed for deterministic generation (defaults to true random)
+        }
+            
+        # Map command-line options to lambda functions that handle their actions
+        self.option_mappings = {
+            "--help" : lambda : (print(HELP_TEXT), self._autostop_warning("--help"), exit(0)), #Print help, warn if extra args were provided, exit
+            "--menu" : lambda : (print(MENU_TEXT), self._autostop_warning("--menu"), exit(0)), #Print menu, warn if extra args were provided, exit
+            "--skip" : lambda : setattr(self, 'skip_confirmation_step', True),                 #Set boolean to bypass manual confirmation step
+            "--defaultcolumns" : lambda : (self.columns.update(self.default_columns),
+                                           setattr(self,'applied_default_columns',True)),      #Update selected columns to include defaults, set boolean for accurate reporting.
+            "--renamewholecells" : lambda : setattr(self, 'rename_whole_cells', True),         #Set boolean to rename whole cells, rather than tokenizing
+            "--warnmaxattempts" : lambda : setattr(self, 'warn_max_attempts', True),           #Set boolean to notify user when renaming attempts max out and numbers are added
+            "--autocolumns" : lambda : setattr(self, 'auto_detect_columns', True)              #Set boolean to auto-detect name columns
         }
         
-        # Map command-line options to their handler functions
-        # TODO Replace with lambda functions where possible
-        self.option_mappings = {
-            "--help" : self._handle_option_help,
-            "--menu" : self._handle_option_menu,
-            "--skip" : self.handle_option_skip, 
-            "--defaultcolumns" : self.handle_option_defaultcolumns,
-            "--renamewholecells" : self.handle_option_renamewholecells,
-            "--warnmaxattempts" : self.handle_option_warnmaxattempts,
-            "--autocolumns" : self.handle_option_autocolumns
-        }
-
-    # Handler for the '-f' flag adds input files for processing
-    # Not giving docstring. TODO replace method with a lambda functions
-    def handle_flag_file(self,path:str):
-        self.files.add(path) 
-    
-    # Handler for the '-c' flag adds target columns for renaming
-    # Not giving docstring. TODO replace method with a lambda functions
-    def handle_flag_column(self,col:str):
-        self.columns.add(col) 
-    
-    # Handler for the '-p' flag sets the output file prefix.
-    # Not giving docstring. TODO replace method with a lambda functions
-    def handle_flag_prefix(self,prefix:str):
-        self.selected_prefix = prefix
-
-    # Handler for the '-s' flag sets the name generation seed.
-    # Not giving docstring. TODO replace method with a lambda functions
-    def handle_flag_seed(self,seed:str):
-        self.selected_seed = seed
-
-    def _handle_option_menu(self):
-        """ Handler for the '--menu' option – prints usage information and exits."""
-        print(MENU_TEXT)
-        self._autostop_warning("--menu")
-        exit(0) # Manual exit
-
-    def _handle_option_help(self):
-        """ Handler for the '--help' option – prints usage information and exits."""
-        print(HELP_TEXT)
-        self._autostop_warning("--help")
-        exit(0) # Manual exit
-
-    # Warns user if extra arguments were provided when using a flag that stops execution
     def _autostop_warning(self,flag:str):
         if self.argument_count > 1:
             extras = self.argument_count - 1
             plural = "s were" if extras != 1 else " was"
             print(f"Note: {extras} extra argument{plural} found, but {flag} stops execution.\nTo continue, remove {flag}.")
     
-    # Handler for the '--skip' option to bypass confirmation step
-    # Not giving docstring. TODO replace method with a lambda functions
-    def handle_option_skip(self):
-        self.skip_confirmation_step = True
-
-    # Applies default columns to the configuration
-    # Not giving docstring. TODO replace method with a lambda function?
-    def handle_option_defaultcolumns(self):
-        self.columns.update(self.default_columns)
-        self.applied_default_columns = True
-
-    # Applies renamer to whole name strings, not tokenizing to catch spaces or special characters.
-    # Not giving docstring. TODO replace method with a lambda functions
-    def handle_option_renamewholecells(self):
-        self.rename_whole_cells = True
-    
-    # Enables warning when max attempts to generate unique names is reached
-    # Not giving docstring. TODO replace method with a lambda functions
-    def handle_option_warnmaxattempts(self):
-        self.warn_max_attempts = True
-
-    # Enables automatic detection of columns, based on common names
-    # Not giving docstring. TODO replace method with a lambda functions
-    def handle_option_autocolumns(self):
-        self.auto_detect_columns = True
 
     def process_args(self,arg_queue:list):
-        """ Processes command-line arguments sequentially to configure the application."""
+        """ Processes command-line arguments sequentially to configure the application.
+            Args: arg_queue (list): list of command-line arguments to process
+        """
         self.argument_count = len(arg_queue)
 
         # Pop arguments from queue, treating as flags, options, or inputs
@@ -323,7 +265,8 @@ class Configuration:
         #Apply default columns if none were specified and fallback is enabled
         if not self.columns and self.use_default_columns_if_none_specified:
             print("No columns specified, applying default columns.")
-            self.handle_option_defaultcolumns()
+            #self.handle_option_defaultcolumns()
+            self.option_mappings["--defaultcolumns"]()#FUTURE - make this a helper method again so we aren't using option_mappings internally?
 
         #Apply default prefix if not specified
         if self.selected_prefix is None:
@@ -360,10 +303,11 @@ class Configuration:
         
         #Get user input, rejecting anything other than ""
         response = input("Press ENTER to continue, type any characters and press ENTER to cancel: ")
-        if response: #TODO confirm that "" evaluates as lossy
+        if response: #If user typed anything, cancel
             print("Operation cancelled by user.")
             return False
-        return True
+        else: # Otherwise, approve response
+            return True
 
 class CSVProcessor:
     """ CSVProcessor class for processing CSV files and replacing names in specified columns.
@@ -407,8 +351,8 @@ class CSVProcessor:
             except Exception as e:
                 print(f"Error: {e}")
             
-    def _rename_row_columns(self,row:dict,target_columns:list[str]):
-        """Generate a renamed row by applying the renaming function to target columns""" #TODO confirm name reference if it changes
+    def _rename_row_cells(self,row:dict,target_columns:list[str]):
+        """Generate a renamed row by applying the renaming process to each target column in the given row."""
         
         for col in target_columns:
             #If row has a non-empty value for the target column, replace with output of renaming function
@@ -419,13 +363,16 @@ class CSVProcessor:
         """ Iterate through an input file, replacing names in target columns and writing changes to output file.
 
         Raises:
-            Multiple exceptions, caught in start_processing() TODO do python conventions like a hint for common exception throws?
+            FileNotFoundError: If the input file does not exist.
+            PermissionError: If the file cannot be accessed.
+            ValueError: If no headers are found in the input file, or if later a column is missing.
+        These exceptions will be caught in start_processing() and reported to the user.
         """
         
         # No try catch for file operation, as the calling method start_processing() catches all exceptions and reports status to terminal.
         with open(input_path, 'r', newline='', encoding='utf-8-sig') as infile:
                 
-            #Detect dialect for file writing
+            # Detect dialect for file writing
             detected_dialect = self._detect_dialect(infile)
 
             # Create CSV reader for input file
@@ -435,8 +382,8 @@ class CSVProcessor:
             if not reader.fieldnames:
                 raise ValueError("No headers found.")
             
-            # Filter empty headers caused by trailing commas or empty headers. 
-            # Output will differ from input, but averts errors in future file use.
+            # Filter empty headers caused by trailing commas or empty headers.
+            # This alters output header from original, but averts errors in future file use.
             valid_fieldnames = [f for f in reader.fieldnames if f and f.strip()]
             
             # Write renamed file
@@ -481,11 +428,10 @@ class CSVProcessor:
             
             #iterate through rows, applying renaming function
             for row in reader:
-                self._rename_row_columns(row,target_columns)
+                self._rename_row_cells(row,target_columns)
 
                 # Write row with replaced names
                 writer.writerow(row)
-        return # TODO Why was this return here
 
     def _detect_target_columns(self,fieldnames:list[str]):
         """ Compare present headers to config columns, building list of target columns to rename."""
