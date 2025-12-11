@@ -175,7 +175,7 @@ class Configuration:
     
     Public Methods:
         process_args(arg_queue:list) - processes command-line arguments sequentially to configure the application.
-        finish_setup() - Finish setup step, verifying inputs and applying defaults where relevant.
+        setup_config() - Finish setup step, verifying inputs and applying defaults where relevant.
         validate_config() - Ensures minimum required inputs are present and ready to use. Returns boolean indicating for validity
         report_ready() - Reports the current configuration to the user, enabling them to confirm that the listed settings are correct
         user_confirm() - Waits for decision to continue or cancel renaming process, returning boolean indicating choice
@@ -271,6 +271,97 @@ class Configuration:
                 print(f"currently no support for argument: '{current_arg}' without a preceding flag. Exiting for safety. run with flag --help or --menu for more information")
                 exit(1)
 
+    def setup_config(self):
+        """ Handles a series of setup steps using helper methods. This sequence follows argument processing, and precedes validation and reporting."""
+        
+        self._apply_mappings_if_specified() # If a mapping file is provided and valid, load and apply it.
+        print() #Print a blank line for visual separation in terminal output
+        self._validate_given_files()  # Validate and filter files, updating the official set.
+        self._resolve_columns() #apply some combination of given, auto-detected, and default columns. maybe even columns from mapping file?
+        self._apply_remaining_defaults() #apply default prefix if none specified, maybe other defaults too?
+                 
+    def _validate_given_files(self):
+        """ Helper method to validate and filter files from self.files."""
+        approved_files = []        
+        for filepath in self.files:
+            try:
+                with open(filepath, 'r', encoding='utf-8-sig') as f:
+                    pass  # Check if file can be opened
+                approved_files.append(filepath)
+            except FileNotFoundError:
+                print(f"Warning: File not found, skipping: {filepath}")
+            except PermissionError:
+                print(f"Warning: Permission denied, skipping: {filepath}")
+            except Exception as e:
+                print(f"Warning: Cannot read file, skipping: {filepath} ({e})")  
+        self.files = set(approved_files)
+    
+    def _apply_mappings_if_specified(self):
+        """_summary_ Loads mapping session data if a valid mapping path is specified. Otherwise, exits silently."""
+        
+        # Exit if no mapping path specified
+        if self.mapping_path is None:
+            return
+        
+        # Exit if mapping file does not exist yet. (Path will be used for saving later, but nothing should be loaded)
+        if not os.path.isfile(self.mapping_path):
+            print(f"Mapping file {self.mapping_path} does not exist yet, starting new session. If you intended to load existing mappings, please check the path and try again.")
+            return
+        
+        # Reaching this point implies a valid path was specified. Print and continue
+        
+        if (self.mapping_path.endswith(".json")):
+            print(f"\nMapping path '{self.mapping_path}' specified")
+        else:
+            print(f"\nWarning: mapping path '{self.mapping_path}' does not have .json extension. Proceeding anyway.")
+            #FUTURE consider enforcing format, possibly appending .json extension if another is given.
+
+        try:
+            data = SessionManager.load_session(self.mapping_path)
+            print("Loaded mapping session data successfully")
+            mapping_json = data.get("mappings",{})
+            config_json = data.get("config",{})
+            
+            #First, save mappings for renamer to use
+            self.loaded_mappings = mapping_json
+            
+            #Next, apply config settings from session data
+            if "seed" in config_json:
+                if self.selected_seed is None:
+                    self.selected_seed = config_json["seed"]
+                    print(f"Applied seed from session data: {self.selected_seed}")
+                else:
+                    print(f"Seed was set by user input ({self.selected_seed}), overriding loaded seed ({config_json['seed']}). To use the loaded seed, remove '-s {self.selected_seed}' and rerun")
+            
+            if "rename_whole_cells" in config_json:
+                self.rename_whole_cells = config_json["rename_whole_cells"]
+                print(f"Applied rename_whole_cells from session data: {self.rename_whole_cells}")
+                #FUTURE revise handling of this setting, checking for a sentinel value before updating. Sentinel values not modified here will be taken care of in apply_remaining_defaults()
+                            
+        except (FileNotFoundError,ValueError) as e:
+            print(f"Issue with mapping file {self.mapping_path}: {e}")
+            exit(1)
+
+        except Exception as e:
+            print(f"{e}")
+            exit(1)   
+
+    def _resolve_columns(self):
+        """ Finish setup steps relating to column names, veryifying inputs and applying defaults where relevant"""
+        
+        # Auto-detect columns if enabled
+        if self.auto_detect_columns:
+            detected_columns = self._detect_columns(self.columns,self.files)
+            if detected_columns:
+                print(f"Auto-detected columns: {sorted(detected_columns)}")
+                self.columns.update(detected_columns)
+
+        #Apply default columns if none were specified and fallback is enabled
+        if not self.columns and self.use_default_columns_if_none_specified:
+            print("No columns specified, applying default columns.")
+            #self.handle_option_defaultcolumns()
+            self.option_mappings["--defaultcolumns"]()#FUTURE - make this a helper method again so we aren't using option_mappings internally?
+
     def _detect_columns(self,target_columns:set, input_files:set):
         """Scans all headers in the input files, adding them to target columns if they match common name patterns"""
         
@@ -301,79 +392,11 @@ class Configuration:
 
         return detected_columns
 
-    def _apply_loaded_mappings(self):
-        print(f"\nMapping path '{self.mapping_path}' specified") #TODO enforce format? append .json if no extension is given?
-        try:
-            data = SessionManager.load_session(self.mapping_path)
-            print("Loaded mapping session data successfully")
-            mapping_json = data.get("mappings",{})
-            config_json = data.get("config",{})
-            
-            #First, save mappings for renamer to use
-            self.loaded_mappings = mapping_json
-            
-            #Next, apply config settings from session data
-            if "seed" in config_json:
-                if self.selected_seed is None:
-                    self.selected_seed = config_json["seed"]
-                    print(f"Applied seed from session data: {self.selected_seed}")
-                else:
-                    print(f"Seed was set by user input ({self.selected_seed}), overriding loaded seed ({config_json['seed']}). To use the loaded seed, remove '-s {self.selected_seed} and rerun")
-            
-            if "rename_whole_cells" in config_json:
-                self.rename_whole_cells = config_json["rename_whole_cells"]
-                print(f"Applied rename_whole_cells from session data: {self.rename_whole_cells}")
-                
-            # TODO For now, session data overrides command line arguments when applicable. Revise this later with a sentinel value?
-            
-            print()#Sepearate mapping prints from next session. TODO ensure consistent spacing in all cases
-
-        #TODO refine exception catching flow and user prints
-        except (FileNotFoundError,ValueError) as e:
-            print(f"Issue with mapping file {self.mapping_path}: {e}")
-            exit(1)
-
-        except Exception as e:
-            print(f"Issue with mapping file {self.mapping_path}: {e}")
-            exit(1)     
-                
-    #TODO this method now does many things. refactor and rename
-    def finish_setup(self):
-        """ Finish setup step, veryifying inputs and applying defaults where relevant"""
-        # Load mapping session if path specified, and file exists already
-        if self.mapping_path is not None and os.path.isfile(self.mapping_path):
-            self._apply_loaded_mappings()
-
-        # Validate and filter files
-        approved_files = []        
-        for filepath in self.files:
-            try:
-                with open(filepath, 'r', encoding='utf-8-sig') as f:
-                    pass  # Check if file can be opened
-                approved_files.append(filepath)
-            except FileNotFoundError:
-                print(f"Warning: File not found, skipping: {filepath}")
-            except PermissionError:
-                print(f"Warning: Permission denied, skipping: {filepath}")
-            except Exception as e:
-                print(f"Warning: Cannot read file, skipping: {filepath} ({e})")
-
-        # Update file set to exclude rejected files
-        self.files = set(approved_files)
+    def _apply_remaining_defaults(self):
+        """ Apply any remaining defaults not yet applied during setup.
+            For now this is just selected_prefix, but will have a larger role updating sentinel values that can be overriden by session data OR arguments
+        """
         
-        # Auto-detect columns if enabled
-        if self.auto_detect_columns:
-            detected_columns = self._detect_columns(self.columns,self.files)
-            if detected_columns:
-                print(f"Auto-detected columns: {sorted(detected_columns)}")
-                self.columns.update(detected_columns)
-
-        #Apply default columns if none were specified and fallback is enabled
-        if not self.columns and self.use_default_columns_if_none_specified:
-            print("No columns specified, applying default columns.")
-            #self.handle_option_defaultcolumns()
-            self.option_mappings["--defaultcolumns"]()#FUTURE - make this a helper method again so we aren't using option_mappings internally?
-
         #Apply default prefix if not specified
         if self.selected_prefix is None:
             print(f"No prefix specified, applying default prefix '{self.default_prefix}'.")
